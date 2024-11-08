@@ -1,0 +1,126 @@
+name: GitHub Classroom Workflow
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.5"
+
+      - name: Get dependencies
+        run: go mod tidy
+
+      - name: Build
+        run: go build ./cmd/service/main.go
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.5"
+
+      - name: Get dependencies
+        run: go mod tidy
+
+      - name: Test all
+        run: go test -cover ./...
+
+  deploy:
+    name: Deploy
+    needs: [ "build", "test" ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Login
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Build and push Docker image
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: muhomorfus/person-service:${{ github.sha }}
+
+      - uses: mscno/setup-goose@v1
+
+      - uses: azure/k8s-set-context@v1
+        name: Set K8s context
+        with:
+          method: kubeconfig
+          kubeconfig: ${{ secrets.KUBECONFIG }}
+
+      - uses: azure/setup-kubectl@v4
+        name: Setup kubectl
+
+      - uses: azure/setup-kubectl@v4
+        name: Setup helm
+
+      - name: Make port-forward
+        run: >
+          kubectl port-forward
+          $(kubectl get pods -o jsonpath={.items..metadata.name} -l application=spilo,cluster-name=person-service-db,spilo-role=master -n avknyazhev)
+          ${{ secrets.PGPORT }}:${{ secrets.PGPORT }}
+          -n avknyazhev &
+
+      - name: Migrate DB
+        run: goose --dir=deployments/migrations postgres "postgres://${{ secrets.PGUSER }}:${{ secrets.PGPASSWORD }}@127.0.0.1:${{ secrets.PGPORT }}/${{ secrets.PGDB }}" up
+
+      - name: Update helm chart
+        run: >
+          helm upgrade --install --create-namespace --namespace avknyazhev
+          --set 'image.tag=${{ github.sha }}'
+          --set 'postgresql.host=${{ secrets.PGHOST }}'
+          --set 'postgresql.port=${{ secrets.PGPORT }}'
+          --set 'postgresql.user=${{ secrets.PGUSER }}'
+          --set 'postgresql.password=${{ secrets.PGPASSWORD }}'
+          --set 'postgresql.db=${{ secrets.PGDB }}'
+          person-service deployments/helm
+
+  autograding:
+    name: Autograding
+    needs: [ "deploy" ]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run API Tests
+        uses: matt-ball/newman-action@master
+        with:
+          collection: postman/[inst] Lab1.postman_collection.json
+          environment: postman/[inst][heroku] Lab1.postman_environment.json
+          delayRequest: 100
+          reporters: '[ "cli" ]'
+
+      - name: Autograding
+        uses: education/autograding@v1
+        continue-on-error: true

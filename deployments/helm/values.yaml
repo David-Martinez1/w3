@@ -1,0 +1,18 @@
+name: person-service
+namespace: avknyazhev
+
+replicaCount: 3
+
+image:
+  repository: muhomorfus/person-service
+  tag: latest
+
+postgresql:
+  host: 127.0.0.1
+  port: 5432
+  user: program
+  password: test
+  db: persons
+  sslEnabled: true
+
+port: 80
